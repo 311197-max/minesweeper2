@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JS 踩地雷：自定義難度版</title>
+    <style>
+        :root {
+            --cell-size: 30px;
+            --bg-color: #f0f0f0;
+            --border-color: #7b7b7b;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e3e3e3;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .game-container {
+            background-color: #bdbdbd;
+            padding: 15px;
+            border: 3px solid #eee;
+            box-shadow: 5px 5px 15px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+
+        .controls {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #cdcdcd;
+            border: 2px inset #eee;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            background-color: black;
+            color: #ff0000;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 24px;
+            padding: 5px 10px;
+            margin-bottom: 10px;
+            border: 2px inset #888;
+        }
+
+        .board {
+            display: grid;
+            gap: 1px;
+            background-color: #7b7b7b;
+            border: 3px inset #eee;
+            margin: 0 auto;
+        }
+
+        .cell {
+            width: var(--cell-size);
+            height: var(--cell-size);
+            background-color: #bdbdbd;
+            border: 3px outset #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+
+        .cell.revealed {
+            background-color: #d1d1d1;
+            border: 1px solid #999;
+        }
+
+        .cell.mine { background-color: #ff4d4d; }
+        .cell.flag { color: #000; }
+
+        /* 數字顏色 */
+        .cell[data-count="1"] { color: blue; }
+        .cell[data-count="2"] { color: green; }
+        .cell[data-count="3"] { color: red; }
+        .cell[data-count="4"] { color: darkblue; }
+
+        #custom-settings { margin-top: 10px; font-size: 14px; }
+        input { width: 40px; margin-right: 10px; }
+        button { cursor: pointer; padding: 5px 15px; }
+    </style>
+</head>
+<body>
+
+    <div class="game-container">
+        <h1>Minesweeper</h1>
+        
+        <div class="controls">
+            <select id="difficulty">
+                <option value="easy">新手 (9x9, 10個雷)</option>
+                <option value="medium">進階 (16x16, 40個雷)</option>
+                <option value="hard">專家 (16x30, 99個雷)</option>
+                <option value="custom">自定義難度</option>
+            </select>
+
+            <div id="custom-settings" style="display: none;">
+                寬(C): <input type="number" id="custom-cols" value="10" min="5" max="50">
+                高(R): <input type="number" id="custom-rows" value="10" min="5" max="50">
+                雷: <input type="number" id="custom-mines" value="10" min="1">
+            </div>
+            <br>
+            <button id="reset-btn">重新開始</button>
+        </div>
+
+        <div class="status-bar">
+            <div>⏱ <span id="timer">000</span></div>
+            <div>💣 <span id="mine-display">010</span></div>
+        </div>
+
+        <div id="board" class="board"></div>
+    </div>
+
+    <script>
+        const boardElement = document.getElementById('board');
+        const difficultySelect = document.getElementById('difficulty');
+        const customSettings = document.getElementById('custom-settings');
+        const resetBtn = document.getElementById('reset-btn');
+        const timerElement = document.getElementById('timer');
+        const mineDisplay = document.getElementById('mine-display');
+
+        let rows, cols, mines, board, timerInterval;
+        let timeElapsed = 0;
+        let gameStarted = false;
+        let flagsUsed = 0;
+
+        const configs = {
+            easy: { r: 9, c: 9, m: 10 },
+            medium: { r: 16, c: 16, m: 40 },
+            hard: { r: 16, c: 30, m: 99 }
+        };
+
+        difficultySelect.onchange = () => {
+            customSettings.style.display = difficultySelect.value === 'custom' ? 'block' : 'none';
+        };
+
+        function initGame() {
+            // 清除狀態
+            clearInterval(timerInterval);
+            timeElapsed = 0;
+            flagsUsed = 0;
+            gameStarted = false;
+            timerElement.innerText = "000";
+            
+            // 設定難度
+            if (difficultySelect.value === 'custom') {
+                rows = parseInt(document.getElementById('custom-rows').value) || 10;
+                cols = parseInt(document.getElementById('custom-cols').value) || 10;
+                mines = parseInt(document.getElementById('custom-mines').value) || 10;
+            } else {
+                const config = configs[difficultySelect.value];
+                rows = config.r;
+                cols = config.c;
+                mines = config.m;
+            }
+
+            mineDisplay.innerText = mines.toString().padStart(3, '0');
+            board = [];
+            boardElement.style.gridTemplateColumns = `repeat(${cols}, 30px)`;
+            boardElement.innerHTML = '';
+
+            for (let r = 0; r < rows; r++) {
+                board[r] = [];
+                for (let c = 0; c < cols; c++) {
+                    const cellEl = document.createElement('div');
+                    cellEl.classList.add('cell');
+                    
+                    cellEl.onclick = () => handleCellClick(r, c);
+                    cellEl.oncontextmenu = (e) => {
+                        e.preventDefault();
+                        handleRightClick(r, c);
+                    };
+
+                    boardElement.appendChild(cellEl);
+                    board[r][c] = { isMine: false, revealed: false, flagged: false, element: cellEl };
+                }
+            }
+            plantMines();
+        }
+
+        function plantMines() {
+            let planted = 0;
+            while (planted < mines) {
+                let r = Math.floor(Math.random() * rows);
+                let c = Math.floor(Math.random() * cols);
+                if (!board[r][c].isMine) {
+                    board[r][c].isMine = true;
+                    planted++;
+                }
+            }
+        }
+
+        function handleCellClick(r, c) {
+            if (!gameStarted) {
+                gameStarted = true;
+                timerInterval = setInterval(() => {
+                    timeElapsed++;
+                    timerElement.innerText = timeElapsed.toString().padStart(3, '0');
+                }, 1000);
+            }
+            revealCell(r, c);
+        }
+
+        function handleRightClick(r, c) {
+            const cell = board[r][c];
+            if (cell.revealed) return;
+
+            cell.flagged = !cell.flagged;
+            if (cell.flagged) {
+                cell.element.classList.add('flag');
+                cell.element.innerText = '🚩';
+                flagsUsed++;
+            } else {
+                cell.element.classList.remove('flag');
+                cell.element.innerText = '';
+                flagsUsed--;
+            }
+            mineDisplay.innerText = Math.max(0, mines - flagsUsed).toString().padStart(3, '0');
+        }
+
+        function revealCell(r, c) {
+            const cell = board[r][c];
+            if (cell.revealed || cell.flagged) return;
+
+            cell.revealed = true;
+            cell.element.classList.add('revealed');
+            cell.element.style.border = "1px solid #999";
+
+            if (cell.isMine) {
+                cell.element.classList.add('mine');
+                cell.element.innerText = '💣';
+                gameOver(false);
+                return;
+            }
+
+            const count = countMinesAround(r, c);
+            if (count > 0) {
+                cell.element.innerText = count;
+                cell.element.setAttribute('data-count', count);
+            } else {
+                // 自動展開周圍
+                for (let dr = -1; dr <= 1; dr++) {
+                    for (let dc = -1; dc <= 1; dc++) {
+                        if (r + dr >= 0 && r + dr < rows && c + dc >= 0 && c + dc < cols) {
+                            revealCell(r + dr, c + dc);
+                        }
+                    }
+                }
+            }
+            checkWin();
+        }
+
+        function countMinesAround(r, c) {
+            let count = 0;
+            for (let dr = -1; dr <= 1; dr++) {
+                for (let dc = -1; dc <= 1; dc++) {
+                    let nr = r + dr, nc = c + dc;
+                    if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && board[nr][nc].isMine) count++;
+                }
+            }
+            return count;
+        }
+
+        function checkWin() {
+            let revealedCount = 0;
+            board.forEach(row => row.forEach(cell => { if (cell.revealed) revealedCount++; }));
+            if (revealedCount === (rows * cols) - mines) gameOver(true);
+        }
+
+        function gameOver(win) {
+            clearInterval(timerInterval);
+            if (!win) {
+                board.forEach(row => row.forEach(cell => {
+                    if (cell.isMine) {
+                        cell.element.classList.add('mine');
+                        cell.element.innerText = '💣';
+                    }
+                }));
+                setTimeout(() => alert("炸彈爆炸！遊戲結束"), 100);
+            } else {
+                setTimeout(() => alert(`恭喜獲勝！用時：${timeElapsed}秒`), 100);
+            }
+        }
+
+        resetBtn.onclick = initGame;
+        initGame(); // 初始執行一次
+    </script>
+</body>
+</html>
